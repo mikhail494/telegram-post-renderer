@@ -1,8 +1,8 @@
 # Telegram post renderer
 
-A tiny private Telegram bot: send it a UTF-8 `*.tgpost.html` document and it replies in the same chat with Telegram-native HTML formatting. Copy that rendered message into your channel manually.
+A tiny private Telegram bot: send it a UTF-8 `*.tgpost.html` document and it replies in the same chat with Telegram-native HTML formatting. Press **Publish** under the preview to post the same HTML directly to the configured channel.
 
-It only accepts documents named exactly `*.tgpost.html` from the configured user ID. It ignores every other update. It never publishes to a channel.
+It only accepts documents named exactly `*.tgpost.html` from the configured user ID. It ignores every other update.
 
 ## Post format
 
@@ -35,7 +35,10 @@ Copy `.env.example` to `.env`, then set your bot token and numeric Telegram user
 ```env
 TELEGRAM_BOT_TOKEN=123456:replace-me
 ALLOWED_USER_ID=123456789
+TELEGRAM_CHANNEL_ID=@your_channel
 ```
+
+The bot must be an administrator of `TELEGRAM_CHANNEL_ID`. Only `ALLOWED_USER_ID` can publish a preview.
 
 To find your user ID, message a reputable Telegram ID bot from the account that will use this bot, then place that numeric value in `ALLOWED_USER_ID`. Keep `.env` private.
 
