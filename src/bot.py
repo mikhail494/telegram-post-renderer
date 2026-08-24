@@ -110,10 +110,16 @@ def build_application(settings: Settings) -> Application:
     return app
 
 
-def main() -> None:
+def configure_logging() -> None:
+    """Configure application logs without exposing Bot API credentials."""
     logging.basicConfig(
         format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+def main() -> None:
+    configure_logging()
     settings = load_settings()
     logger.info("Starting Telegram post renderer for allowed user %s", settings.allowed_user_id)
     build_application(settings).run_polling()

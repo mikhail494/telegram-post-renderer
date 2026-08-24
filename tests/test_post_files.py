@@ -1,6 +1,15 @@
+import logging
+
 import pytest
 
-from src.bot import MAX_MESSAGE_LENGTH, PostFileError, is_allowed_user, is_post_filename, read_post_html
+from src.bot import (
+    MAX_MESSAGE_LENGTH,
+    PostFileError,
+    configure_logging,
+    is_allowed_user,
+    is_post_filename,
+    read_post_html,
+)
 
 
 def test_recognizes_tgpost_html_filename():
@@ -36,3 +45,9 @@ def test_allowed_user_filtering():
     assert is_allowed_user(42, 42)
     assert not is_allowed_user(43, 42)
     assert not is_allowed_user(None, 42)
+
+
+def test_logging_does_not_emit_http_request_urls():
+    configure_logging()
+
+    assert logging.getLogger("httpx").getEffectiveLevel() > logging.INFO
