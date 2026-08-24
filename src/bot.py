@@ -72,22 +72,40 @@ class DraftStore:
 
     pending_image: PendingImage | None = None
     posts: dict[str, PendingPost] = field(default_factory=dict)
+    active_post_id: str | None = None
 
     @property
     def pending_image_file_id(self) -> str | None:
         return self.pending_image.file_id if self.pending_image else None
 
-    def set_pending_image(self, file_id: str, file_name: str | None = None) -> None:
-        self.pending_image = PendingImage(file_id=file_id, file_name=file_name)
+    @property
+    def active_post(self) -> PendingPost | None:
+        return self.posts.get(self.active_post_id) if self.active_post_id else None
+
+    def set_pending_image(self, file_id: str, file_name: str | None = None) -> bool:
+        """Attach an image to the active draft, or save it for the next one."""
+        image = PendingImage(file_id=file_id, file_name=file_name)
+        post = self.active_post
+        if post:
+            post.image = image
+            post.image_published = False
+            return True
+        self.pending_image = image
+        return False
 
     def create_post(self, html: str) -> str:
         post_id = secrets.token_urlsafe(12)
+        self.posts.clear()
         self.posts[post_id] = PendingPost(html, self.pending_image)
+        self.active_post_id = post_id
         self.pending_image = None
         return post_id
 
     def remove_post(self, post_id: str) -> None:
         self.posts.pop(post_id, None)
+        if self.active_post_id == post_id:
+            self.active_post_id = None
+            self.pending_image = None
 
 
 def is_post_filename(filename: str | None) -> bool:
@@ -172,7 +190,9 @@ def document_filter(settings: Settings):
     return filters.Document.ALL & filters.User(user_id=settings.allowed_user_id)
 
 
-async def capture_photo(update: Update, settings: Settings, drafts: DraftStore) -> None:
+async def capture_photo(
+    update: Update, settings: Settings, drafts: DraftStore, bot: Bot | None = None
+) -> None:
     """Remember the largest authorized Telegram photo for the next post."""
     message = update.effective_message
     user = update.effective_user
@@ -182,7 +202,9 @@ async def capture_photo(update: Update, settings: Settings, drafts: DraftStore) 
         or not is_allowed_user(user.id if user else None, settings.allowed_user_id)
     ):
         return
-    drafts.set_pending_image(message.photo[-1].file_id)
+    attached_to_post = drafts.set_pending_image(message.photo[-1].file_id)
+    if attached_to_post and bot and drafts.active_post and drafts.active_post.image:
+        await message.reply_photo(await image_payload(bot, drafts.active_post.image))
 
 
 async def handle_document(
@@ -202,7 +224,9 @@ async def handle_document(
     ):
         return
     if is_supported_image_document(document):
-        drafts.set_pending_image(document.file_id, document.file_name)
+        attached_to_post = drafts.set_pending_image(document.file_id, document.file_name)
+        if attached_to_post and drafts.active_post and drafts.active_post.image:
+            await message.reply_photo(await image_payload(context.bot, drafts.active_post.image))
         return
     await render_post(update, context, settings=settings, drafts=drafts)
 
@@ -256,8 +280,11 @@ async def handle_publish_callback(
         return
 
     post_id = (query.data or "").removeprefix(PUBLISH_CALLBACK_PREFIX)
-    post = drafts.posts.get(post_id)
-    if not post:
+    if post_id != drafts.active_post_id:
+        await query.answer("This preview is no longer available.", show_alert=True)
+        return
+    post = drafts.active_post
+    if not post or not post_id:
         await query.answer("This preview is no longer available.", show_alert=True)
         return
 
@@ -310,7 +337,7 @@ def build_application(settings: Settings) -> Application:
     app.add_handler(
         MessageHandler(
             filters.PHOTO & filters.User(user_id=settings.allowed_user_id),
-            lambda update, context: capture_photo(update, settings, drafts),
+            lambda update, context: capture_photo(update, settings, drafts, context.bot),
         )
     )
     app.add_handler(

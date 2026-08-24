@@ -157,6 +157,79 @@ def test_post_binds_and_consumes_the_pending_image():
     assert state.pending_image_file_id is None
 
 
+def test_image_attaches_to_an_existing_current_draft():
+    state = DraftStore()
+    post_id = state.create_post("<b>Post</b>")
+
+    state.set_pending_image("image")
+
+    assert state.posts[post_id].image_file_id == "image"
+    assert state.pending_image_file_id is None
+
+
+def test_newer_image_replaces_the_image_on_an_existing_current_draft():
+    state = DraftStore()
+    post_id = state.create_post("<b>Post</b>")
+    state.set_pending_image("first")
+
+    state.set_pending_image("second")
+
+    assert state.posts[post_id].image_file_id == "second"
+
+
+def test_existing_publish_callback_uses_an_image_attached_after_preview_creation():
+    state = DraftStore()
+    post_id = state.create_post("<b>Post</b>")
+    query = make_query(42, post_id)
+    bot = SimpleNamespace(send_photo=AsyncMock(), send_message=AsyncMock())
+
+    state.set_pending_image("image")
+    asyncio.run(handle_publish_callback(query, bot, SETTINGS, state))
+
+    assert bot.send_photo.await_args.kwargs["photo"] == "image"
+    assert state.posts == {}
+
+
+def test_image_after_preview_is_shown_as_an_attachment_confirmation():
+    state = DraftStore()
+    post_id = state.create_post("<b>Post</b>")
+    message = SimpleNamespace(
+        photo=[SimpleNamespace(file_id="image")], reply_photo=AsyncMock()
+    )
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=message)
+
+    asyncio.run(capture_photo(update, SETTINGS, state, SimpleNamespace()))
+
+    assert state.posts[post_id].image_file_id == "image"
+    message.reply_photo.assert_awaited_once_with("image")
+
+
+def test_successful_publish_does_not_let_later_image_mutate_the_old_draft():
+    state = DraftStore()
+    post_id = state.create_post("<b>Post</b>")
+    published_post = state.posts[post_id]
+    bot = SimpleNamespace(send_message=AsyncMock())
+
+    asyncio.run(handle_publish_callback(make_query(42, post_id), bot, SETTINGS, state))
+    state.set_pending_image("next-image")
+
+    assert state.posts == {}
+    assert published_post.image_file_id is None
+    assert state.pending_image_file_id == "next-image"
+
+
+def test_stale_preview_button_cannot_publish_a_newer_draft():
+    state = DraftStore()
+    stale_post_id = state.create_post("<b>Old</b>")
+    current_post_id = state.create_post("<b>Current</b>")
+    bot = SimpleNamespace(send_message=AsyncMock())
+
+    asyncio.run(handle_publish_callback(make_query(42, stale_post_id), bot, SETTINGS, state))
+
+    bot.send_message.assert_not_awaited()
+    assert current_post_id in state.posts
+
+
 def test_text_only_post_has_no_image():
     state = DraftStore()
 
