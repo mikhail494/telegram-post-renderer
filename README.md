@@ -1,55 +1,96 @@
-# Telegram post renderer
+# Telegram Post Renderer
 
-A tiny private Telegram bot: send it a UTF-8 `*.tgpost.html` document and it replies in the same chat with Telegram-native HTML formatting. Press **Publish** under the preview to post the same HTML directly to the configured channel.
+Send a `.tgpost.html` file to Telegram, preview its native formatting, and publish it directly to a channel.
 
-It only accepts documents named exactly `*.tgpost.html` from the configured user ID. It ignores every other update.
+`ChatGPT -> .tgpost.html + image -> Telegram bot -> Preview -> Publish -> Channel`
 
-## Post format
+## Why
 
-The file must contain only HTML supported by the [Telegram Bot API](https://core.telegram.org/bots/api#html-style), for example:
+Copying rich text between ChatGPT, iOS, macOS, Windows, and Telegram can lose or corrupt formatting. This bot avoids the clipboard: Telegram Bot API renders and publishes the HTML entities directly.
+
+## Features
+
+- Telegram Bot API HTML rendering from `.tgpost.html` input
+- Native formatted preview with a direct **Publish** action
+- Optional single image per post, stored as a Telegram `file_id`
+- HTML media caption when it fits; image plus full formatted text when it does not
+- Single-user allowlist and long polling
+- No database; unpublished drafts are in memory only
+
+## Workflow
+
+```mermaid
+flowchart LR
+    A[ChatGPT] --> B[.tgpost.html + image]
+    B --> C[Telegram bot]
+    C --> D[Preview]
+    D --> E[Publish]
+    E --> F[Telegram channel]
+```
+
+Send an image first, then the `.tgpost.html` document. The preview shows the image and formatted post separately; the image is bound to that preview. Sending a newer image replaces the pending one. A post without an image continues to work normally.
+
+## Example `.tgpost.html`
 
 ```html
 <b>Open-source alternatives</b>
 
-<b>Twenty</b>
-https://github.com/twentyhq/twenty
+<a href="https://github.com/twentyhq/twenty">Twenty</a> replaces <code>Salesforce</code>.
 
-Replaces: <code>Salesforce</code>
+<blockquote>Keep the workflow simple: preview, then publish.</blockquote>
+
 <pre><code class="language-powershell">gh repo clone twentyhq/twenty</code></pre>
 ```
 
-The bot sends this source unchanged with `parse_mode=HTML`; Telegram performs the formatting. Link previews are disabled. Files longer than 4,096 characters are rejected rather than split.
+Use only [Telegram Bot API HTML formatting](https://core.telegram.org/bots/api#html-style). The bot passes the HTML to Telegram unchanged; it does not convert it to Markdown.
 
-## Run locally (PowerShell)
+## Setup
 
-Create a virtual environment and install dependencies:
+Python 3.12+ is recommended.
 
 ```powershell
 py -3.12 -m venv .venv
-.\\.venv\\Scripts\\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-Copy `.env.example` to `.env`, then set your bot token and numeric Telegram user ID:
+On Linux, create and activate a virtual environment with `python3 -m venv .venv` and `source .venv/bin/activate`.
+
+## Environment
 
 ```env
-TELEGRAM_BOT_TOKEN=123456:replace-me
-ALLOWED_USER_ID=123456789
-TELEGRAM_CHANNEL_ID=@your_channel
+TELEGRAM_BOT_TOKEN=
+ALLOWED_USER_ID=
+TELEGRAM_CHANNEL_ID=
 ```
 
-The bot must be an administrator of `TELEGRAM_CHANNEL_ID`. Only `ALLOWED_USER_ID` can publish a preview.
+- `TELEGRAM_BOT_TOKEN` — token for the bot.
+- `ALLOWED_USER_ID` — numeric Telegram user ID permitted to send drafts and publish.
+- `TELEGRAM_CHANNEL_ID` — target channel username (for example `@channel`) or numeric chat ID. The bot must be an administrator there.
 
-To find your user ID, message a reputable Telegram ID bot from the account that will use this bot, then place that numeric value in `ALLOWED_USER_ID`. Keep `.env` private.
+Keep `.env` private; it is ignored by Git.
 
-Start long polling:
+## Run
 
 ```powershell
 python -m src.bot
 ```
 
-## Test
+## VPS
+
+The production deployment uses a Python virtual environment, `systemd`, and Telegram long polling. No inbound web server or webhook is required.
+
+## Tests
 
 ```powershell
 pytest
+```
+
+## Project structure
+
+```text
+src/bot.py               Bot, draft state, and Telegram handlers
+tests/test_post_files.py Focused behavior tests
+.env.example             Safe configuration template
 ```

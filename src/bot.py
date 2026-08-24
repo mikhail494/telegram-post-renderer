@@ -1,21 +1,35 @@
-"""Render uploaded Telegram-compatible HTML back into the sender's chat."""
+"""Render uploaded Telegram-compatible HTML and publish approved previews."""
 
 from __future__ import annotations
 
 import logging
 import os
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
+from io import BytesIO
 
 from dotenv import load_dotenv
-from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
+from telegram import (
+    Bot,
+    CallbackQuery,
+    Document,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+    LinkPreviewOptions,
+    Update,
+)
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 MAX_MESSAGE_LENGTH = 4096
+MAX_CAPTION_LENGTH = 1024
 POST_FILE_SUFFIX = ".tgpost.html"
 PUBLISH_CALLBACK_PREFIX = "publish:"
+IMAGE_DOCUMENT_SUFFIXES = (".png", ".jpeg", ".jpg", ".webp")
+IMAGE_DOCUMENT_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +45,92 @@ class Settings:
     channel_id: str
 
 
+@dataclass
+class PendingImage:
+    """A Telegram image reference, with a name when it originated as a document."""
+
+    file_id: str
+    file_name: str | None = None
+
+
+@dataclass
+class PendingPost:
+    """One preview's immutable HTML and optionally associated Telegram image."""
+
+    html: str
+    image: PendingImage | None
+    image_published: bool = False
+
+    @property
+    def image_file_id(self) -> str | None:
+        return self.image.file_id if self.image else None
+
+
+@dataclass
+class DraftStore:
+    """In-memory draft state; pending work is intentionally lost on restart."""
+
+    pending_image: PendingImage | None = None
+    posts: dict[str, PendingPost] = field(default_factory=dict)
+
+    @property
+    def pending_image_file_id(self) -> str | None:
+        return self.pending_image.file_id if self.pending_image else None
+
+    def set_pending_image(self, file_id: str, file_name: str | None = None) -> None:
+        self.pending_image = PendingImage(file_id=file_id, file_name=file_name)
+
+    def create_post(self, html: str) -> str:
+        post_id = secrets.token_urlsafe(12)
+        self.posts[post_id] = PendingPost(html, self.pending_image)
+        self.pending_image = None
+        return post_id
+
+    def remove_post(self, post_id: str) -> None:
+        self.posts.pop(post_id, None)
+
+
 def is_post_filename(filename: str | None) -> bool:
     """Return whether a document name is the exact supported input type."""
     return bool(filename and filename.endswith(POST_FILE_SUFFIX))
+
+
+def is_supported_image_document(document: Document | None) -> bool:
+    """Return whether a document is one of the supported single-post image types."""
+    if document is None:
+        return False
+    filename = (document.file_name or "").lower()
+    return filename.endswith(IMAGE_DOCUMENT_SUFFIXES) and (
+        document.mime_type is None or document.mime_type in IMAGE_DOCUMENT_MIME_TYPES
+    )
+
+
+class TelegramHTMLTextLengthParser(HTMLParser):
+    """Count Telegram HTML's rendered text without changing the HTML source."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.text_length = 0
+
+    def handle_data(self, data: str) -> None:
+        self.text_length += len(data)
+
+
+def rendered_html_text_length(html: str) -> int:
+    """Return the rendered text length used to choose Telegram's caption path."""
+    parser = TelegramHTMLTextLengthParser()
+    parser.feed(html)
+    parser.close()
+    return parser.text_length
+
+
+async def image_payload(bot: Bot, image: PendingImage) -> str | InputFile:
+    """Return an image usable with send_photo without changing a document file ID's type."""
+    if image.file_name is None:
+        return image.file_id
+    telegram_file = await bot.get_file(image.file_id)
+    data = bytes(await telegram_file.download_as_bytearray())
+    return InputFile(BytesIO(data), filename=image.file_name)
 
 
 def is_allowed_user(user_id: int | None, allowed_user_id: int) -> bool:
@@ -71,8 +168,43 @@ def load_settings() -> Settings:
 
 
 def document_filter(settings: Settings):
-    """Build the only update filter the bot accepts."""
+    """Build the document filter used for post files and supported images."""
     return filters.Document.ALL & filters.User(user_id=settings.allowed_user_id)
+
+
+async def capture_photo(update: Update, settings: Settings, drafts: DraftStore) -> None:
+    """Remember the largest authorized Telegram photo for the next post."""
+    message = update.effective_message
+    user = update.effective_user
+    if (
+        message is None
+        or not message.photo
+        or not is_allowed_user(user.id if user else None, settings.allowed_user_id)
+    ):
+        return
+    drafts.set_pending_image(message.photo[-1].file_id)
+
+
+async def handle_document(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    settings: Settings,
+    drafts: DraftStore,
+) -> None:
+    """Accept a supported image document or render a post file from one input seam."""
+    message = update.effective_message
+    user = update.effective_user
+    document = message.document if message else None
+    if (
+        document is None
+        or not is_allowed_user(user.id if user else None, settings.allowed_user_id)
+    ):
+        return
+    if is_supported_image_document(document):
+        drafts.set_pending_image(document.file_id, document.file_name)
+        return
+    await render_post(update, context, settings=settings, drafts=drafts)
 
 
 async def render_post(
@@ -80,9 +212,9 @@ async def render_post(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     settings: Settings,
-    pending_posts: dict[str, str],
+    drafts: DraftStore,
 ) -> None:
-    """Download a permitted post file and return it using Telegram HTML parsing."""
+    """Render an authorized post preview and bind any pending image to it."""
     message = update.effective_message
     user = update.effective_user
     if (
@@ -96,8 +228,10 @@ async def render_post(
     try:
         telegram_file = await message.document.get_file()
         html = read_post_html(bytes(await telegram_file.download_as_bytearray()))
-        post_id = secrets.token_urlsafe(12)
-        pending_posts[post_id] = html
+        post_id = drafts.create_post(html)
+        post = drafts.posts[post_id]
+        if post.image:
+            await message.reply_photo(await image_payload(context.bot, post.image))
         await message.reply_text(
             html,
             parse_mode=ParseMode.HTML,
@@ -114,7 +248,7 @@ async def render_post(
 
 
 async def handle_publish_callback(
-    query: CallbackQuery, bot, settings: Settings, pending_posts: dict[str, str]
+    query: CallbackQuery, bot: Bot, settings: Settings, drafts: DraftStore
 ) -> None:
     """Publish a pending HTML preview after an authorized button press."""
     if not is_allowed_user(query.from_user.id if query.from_user else None, settings.allowed_user_id):
@@ -122,43 +256,67 @@ async def handle_publish_callback(
         return
 
     post_id = (query.data or "").removeprefix(PUBLISH_CALLBACK_PREFIX)
-    html = pending_posts.get(post_id)
-    if not html:
+    post = drafts.posts.get(post_id)
+    if not post:
         await query.answer("This preview is no longer available.", show_alert=True)
         return
 
     try:
-        await bot.send_message(
-            chat_id=settings.channel_id,
-            text=html,
-            parse_mode=ParseMode.HTML,
-            link_preview_options=LinkPreviewOptions(is_disabled=True),
-        )
+        if post.image and rendered_html_text_length(post.html) <= MAX_CAPTION_LENGTH:
+            await bot.send_photo(
+                chat_id=settings.channel_id,
+                photo=await image_payload(bot, post.image),
+                caption=post.html,
+                parse_mode=ParseMode.HTML,
+            )
+        elif post.image:
+            if not post.image_published:
+                await bot.send_photo(
+                    chat_id=settings.channel_id, photo=await image_payload(bot, post.image)
+                )
+                post.image_published = True
+            await bot.send_message(
+                chat_id=settings.channel_id,
+                text=post.html,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
+        else:
+            await bot.send_message(
+                chat_id=settings.channel_id,
+                text=post.html,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
     except TelegramError as exc:
         logger.warning("Telegram rejected publish request: %s", exc)
         await query.answer("Could not publish: Telegram rejected the post.", show_alert=True)
         return
 
-    pending_posts.pop(post_id, None)
+    drafts.remove_post(post_id)
     await query.answer("Published.")
     await query.edit_message_reply_markup(reply_markup=None)
 
 
 def build_application(settings: Settings) -> Application:
     app = Application.builder().token(settings.token).build()
-    pending_posts: dict[str, str] = {}
+    drafts = DraftStore()
     app.add_handler(
         MessageHandler(
             document_filter(settings),
-            lambda update, context: render_post(
-                update, context, settings=settings, pending_posts=pending_posts
-            ),
+            lambda update, context: handle_document(update, context, settings=settings, drafts=drafts),
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.PHOTO & filters.User(user_id=settings.allowed_user_id),
+            lambda update, context: capture_photo(update, settings, drafts),
         )
     )
     app.add_handler(
         CallbackQueryHandler(
             lambda update, context: handle_publish_callback(
-                update.callback_query, context.bot, settings, pending_posts
+                update.callback_query, context.bot, settings, drafts
             ),
             pattern=f"^{PUBLISH_CALLBACK_PREFIX}",
         )
@@ -183,4 +341,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
