@@ -8,6 +8,7 @@
 
 **Preview and publish Telegram-native HTML posts without clipboard formatting loss.**
 
+[![CI](https://github.com/mikhail494/telegram-post-renderer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mikhail494/telegram-post-renderer/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?style=flat-square&logo=telegram&logoColor=white)
 ![HTML](https://img.shields.io/badge/Input-.tgpost.html-E34F26?style=flat-square&logo=html5&logoColor=white)
