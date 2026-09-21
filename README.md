@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/hero.svg" alt="Telegram Post Renderer" width="100%" />
+</p>
+
 <div align="center">
 
 # Telegram Post Renderer
