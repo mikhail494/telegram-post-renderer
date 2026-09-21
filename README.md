@@ -1,8 +1,19 @@
+<div align="center">
+
 # Telegram Post Renderer
 
-Send a `.tgpost.html` file to Telegram, preview its native formatting, and publish it directly to a channel.
+**Preview and publish Telegram-native HTML posts without clipboard formatting loss.**
+
+![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?style=flat-square&logo=telegram&logoColor=white)
+![HTML](https://img.shields.io/badge/Input-.tgpost.html-E34F26?style=flat-square&logo=html5&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
 
 `ChatGPT -> .tgpost.html + image -> Telegram bot -> Preview -> Publish -> Channel`
+
+[Workflow](#workflow) · [Setup](#setup) · [Environment](#environment) · [Run](#run) · [Tests](#tests)
+
+</div>
 
 ## Why
 
